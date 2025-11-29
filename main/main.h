@@ -22,6 +22,8 @@
 #define ESP_TEMP_SENSOR_MAX_VALUE                                              \
   (80) /* Local sensor max measured value (degree Celsius) */
 
+#define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
+
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
  */
