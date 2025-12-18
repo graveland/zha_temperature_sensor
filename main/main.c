@@ -21,6 +21,13 @@ static const char *TAG = "TEMP_SENSOR";
 static led_strip_handle_t led_strip = NULL;
 uint8_t read_failures = 0;
 
+// Network watchdog - detect and recover from network disconnection
+static bool network_joined = false;
+static int network_not_joined_count = 0;
+
+// Diagnostics - reset count
+static uint16_t zb_reset_count = 0;
+
 uint8_t ds18b20_device_num = 0;
 ds18b20_device_handle_t ds18b20s[HA_ESP_NUM_T_SENSORS];
 uint8_t ep_to_ds[HA_ESP_NUM_T_SENSORS]; // Use 0xff to indicate no link
@@ -244,6 +251,21 @@ static void led_identify_blink(uint16_t identify_time) {
   set_led_color(0, 0, 0);
 }
 
+static void watchdog_timer_callback(void *arg) {
+    // Network watchdog - reboot if not joined for too long
+    if (network_joined) {
+        network_not_joined_count = 0;
+    } else {
+        network_not_joined_count++;
+        ESP_LOGW(TAG, "Watchdog: Not joined to network (count: %d)", network_not_joined_count);
+        if (network_not_joined_count > 5) {
+            ESP_LOGW(TAG, "Watchdog: Not joined to network for 5+ minutes - factory reset and reboot");
+            esp_zb_factory_reset();
+            esp_restart();
+        }
+    }
+}
+
 static void start_temp_timer() {
   const esp_timer_create_args_t periodic_timer_args = {
       .callback = &temp_timer_callback, .name = "temp_timer"};
@@ -252,6 +274,16 @@ static void start_temp_timer() {
   ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer,
                                            ESP_TEMP_SENSOR_UPDATE_INTERVAL));
+
+  // Watchdog timer - runs every minute to check for network disconnection
+  ESP_LOGI(TAG, "Starting watchdog timer");
+  const esp_timer_create_args_t watchdog_timer_args = {
+      .callback = &watchdog_timer_callback,
+      .name = "watchdog_timer"
+  };
+  esp_timer_handle_t watchdog_timer;
+  ESP_ERROR_CHECK(esp_timer_create(&watchdog_timer_args, &watchdog_timer));
+  ESP_ERROR_CHECK(esp_timer_start_periodic(watchdog_timer, 60 * 1000000));  // 1 minute
 }
 
 void report_temp_attr(uint8_t ep) {
@@ -438,8 +470,22 @@ static esp_err_t zb_identify_cluster_attr_handler(
     esp_zb_zcl_set_attr_value_message_t *message) {
   esp_err_t ret = ESP_OK;
 
-  ESP_LOGI(TAG, "Cluster attr write: cluster=0x%x, attr=0x%x",
-           message->info.cluster, message->attribute.id);
+  ESP_LOGI(TAG, "Cluster attr write: cluster=0x%x, attr=0x%x, endpoint=%d",
+           message->info.cluster, message->attribute.id, message->info.dst_endpoint);
+
+  // Handle writes to On/Off cluster on reboot endpoint
+  if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF &&
+      message->info.dst_endpoint == HA_ESP_REBOOT_ENDPOINT) {
+    if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+      bool on_off_value = *(bool *)message->attribute.data.value;
+      if (on_off_value) {
+        ESP_LOGW(TAG, "Reboot switch triggered - rebooting device");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+      }
+    }
+    return ret;
+  }
 
   if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY) {
     // Handle identify command - attribute 0x0 is identify_time
@@ -526,6 +572,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
         esp_zb_bdb_start_top_level_commissioning(
             ESP_ZB_BDB_MODE_NETWORK_STEERING);
       } else {
+        network_joined = true;
         ESP_LOGI(TAG, "Device rebooted");
       }
     } else {
@@ -536,6 +583,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     break;
   case ESP_ZB_BDB_SIGNAL_STEERING:
     if (err_status == ESP_OK) {
+      network_joined = true;
       esp_zb_ieee_addr_t extended_pan_id;
       esp_zb_get_extended_pan_id(extended_pan_id);
       ESP_LOGI(TAG,
@@ -553,6 +601,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           (esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
           ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
     }
+    break;
+  case ESP_ZB_ZDO_SIGNAL_LEAVE:
+    network_joined = false;
+    ESP_LOGW(TAG, "Left network - will factory reset and reboot on next watchdog");
     break;
   default:
     ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s",
@@ -649,6 +701,14 @@ static esp_zb_cluster_list_t *custom_temperature_sensor_clusters_create(
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_ota_cluster(
       cluster_list, ota_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
 
+  // Add Diagnostics cluster for reset count
+  esp_zb_attribute_list_t *diagnostics_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_DIAGNOSTICS);
+  ESP_ERROR_CHECK(esp_zb_cluster_add_attr(diagnostics_cluster, ESP_ZB_ZCL_CLUSTER_ID_DIAGNOSTICS,
+                                          ESP_ZB_ZCL_ATTR_DIAGNOSTICS_NUMBER_OF_RESETS_ID,
+                                          ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY,
+                                          &zb_reset_count));
+  ESP_ERROR_CHECK(esp_zb_cluster_list_add_diagnostics_cluster(cluster_list, diagnostics_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
   return cluster_list;
 }
 
@@ -663,6 +723,49 @@ static void custom_temperature_sensor_ep_create(
   esp_zb_cluster_list_t *t_cl =
       custom_temperature_sensor_clusters_create(temperature_sensor);
   esp_zb_ep_list_add_ep(ep_list, t_cl, endpoint_config);
+}
+
+static esp_zb_cluster_list_t *reboot_switch_clusters_create(void)
+{
+    esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
+
+    // Add Basic cluster for device identification
+    esp_zb_basic_cluster_cfg_t basic_cfg = {
+        .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
+        .power_source = 0x01,  // Mains powered
+    };
+    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, MANUFACTURER_NAME));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, "\x0D""Reboot Switch"));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    // Add Identify cluster
+    esp_zb_identify_cluster_cfg_t identify_cfg = {
+        .identify_time = 0,
+    };
+    esp_zb_attribute_list_t *identify_cluster = esp_zb_identify_cluster_create(&identify_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    // Add On/Off server cluster for reboot switch
+    esp_zb_on_off_cluster_cfg_t on_off_cfg = {
+        .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE,
+    };
+    esp_zb_attribute_list_t *on_off_cluster = esp_zb_on_off_cluster_create(&on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(cluster_list, on_off_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    return cluster_list;
+}
+
+static void reboot_switch_ep_create(esp_zb_ep_list_t *ep_list)
+{
+    esp_zb_endpoint_config_t endpoint_config = {
+        .endpoint = HA_ESP_REBOOT_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID,
+        .app_device_version = 0,
+    };
+    esp_zb_cluster_list_t *cluster_list = reboot_switch_clusters_create();
+    esp_zb_ep_list_add_ep(ep_list, cluster_list, endpoint_config);
 }
 
 static void esp_zb_task(void *pvParameters) {
@@ -683,6 +786,9 @@ static void esp_zb_task(void *pvParameters) {
     custom_temperature_sensor_ep_create(ep_list, ep, &temp_sensor_cfg);
   }
   ESP_LOGI(TAG, "Total temperature endpoints created: %d", HA_ESP_NUM_T_SENSORS);
+
+  // Add reboot switch endpoint
+  reboot_switch_ep_create(ep_list);
 
   // Register OTA upgrade action handler
   esp_zb_core_action_handler_register(esp_zb_action_handler);
@@ -722,6 +828,9 @@ void app_main(void) {
   };
   ESP_ERROR_CHECK(nvs_flash_init());
   ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+
+  // Increment and store reset count before Zigbee starts
+  zb_reset_count = increment_and_get_reset_count();
 
   /* Start Zigbee stack task */
   xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
