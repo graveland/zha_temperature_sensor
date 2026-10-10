@@ -210,7 +210,7 @@ static void init_rgb_led(void) {
   led_strip_config_t strip_config = {
       .strip_gpio_num = RGB_LED_GPIO,
       .max_leds = 1, // Single RGB LED
-      .led_pixel_format = LED_PIXEL_FORMAT_GRB,
+      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
       .led_model = LED_MODEL_WS2812,
       .flags.invert_out = false,
   };
@@ -287,10 +287,10 @@ static void start_temp_timer() {
 }
 
 void report_temp_attr(uint8_t ep) {
-  esp_zb_zcl_report_attr_cmd_t report_attr_cmd;
+  esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {0};
   report_attr_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
   report_attr_cmd.attributeID = ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID;
-  report_attr_cmd.cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE;
+  report_attr_cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
   report_attr_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT;
   report_attr_cmd.zcl_basic_cmd.src_endpoint = ep;
 
@@ -780,7 +780,7 @@ static void esp_zb_task(void *pvParameters) {
     esp_zb_temperature_meas_cluster_cfg_t temp_sensor_cfg = {
         .max_value = zb_temperature_to_s16(ESP_TEMP_SENSOR_MAX_VALUE),
         .min_value = zb_temperature_to_s16(ESP_TEMP_SENSOR_MIN_VALUE),
-        .measured_value = ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_UNKNOWN};
+        .measured_value = ESP_ZB_ZCL_TEMP_MEASUREMENT_MEASURED_VALUE_UNKNOWN};
 
     ESP_LOGI(TAG, "Creating temperature endpoint: %d", ep);
     custom_temperature_sensor_ep_create(ep_list, ep, &temp_sensor_cfg);
@@ -818,7 +818,7 @@ static void esp_zb_task(void *pvParameters) {
   esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
   ESP_ERROR_CHECK(esp_zb_start(false));
 
-  esp_zb_main_loop_iteration();
+  esp_zb_stack_main_loop();
 }
 
 void app_main(void) {
