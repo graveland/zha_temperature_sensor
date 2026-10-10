@@ -27,7 +27,7 @@ const definition = {
         identify(),
     ],
     exposes: [
-        e.switch_().withEndpoint('reboot'),
+        e.switch_().withState('state', true).withEndpoint('reboot'),
         e.numeric('reset_count', ea.STATE).withDescription('Number of device resets'),
     ],
     fromZigbee: [
