@@ -1,5 +1,4 @@
 const {temperature, identify, onOff} = require('zigbee-herdsman-converters/lib/modernExtend');
-const ota = require('zigbee-herdsman-converters/lib/ota');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
 const tz = require('zigbee-herdsman-converters/converters/toZigbee');
@@ -41,18 +40,7 @@ const definition = {
     endpoint: (device) => {
         return {reboot: 10};
     },
-    ota: {
-        isUpdateAvailable: async (device, logger, data = null) => {
-            return ota.isUpdateAvailable(device, logger, data, {
-                imageBlockResponseDelay: 500,
-            });
-        },
-        updateToLatest: async (device, logger, onProgress) => {
-            return ota.updateToLatest(device, logger, onProgress, {
-                imageBlockResponseDelay: 500,
-            });
-        },
-    },
+    ota: true,
     configure: async (device, coordinatorEndpoint) => {
         const endpoint = device.getEndpoint(1);
 
