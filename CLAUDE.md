@@ -1,0 +1,1 @@
+- don't attempt builds or flashing, leave that to me
