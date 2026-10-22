@@ -18,9 +18,9 @@
 #define ESP_TEMP_SENSOR_UPDATE_INTERVAL                                        \
   (10000000) /* Local sensor update interval (microsecond) */
 #define ESP_TEMP_SENSOR_MIN_VALUE                                              \
-  (-20) /* Local sensor min measured value (degree Celsius) */
+  (-55) /* Local sensor min measured value (degree Celsius), DS18B20 limit */
 #define ESP_TEMP_SENSOR_MAX_VALUE                                              \
-  (80) /* Local sensor max measured value (degree Celsius) */
+  (125) /* Local sensor max measured value (degree Celsius), DS18B20 limit */
 
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
 
