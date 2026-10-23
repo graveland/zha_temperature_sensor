@@ -25,6 +25,8 @@
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
 
 #define HA_ESP_REBOOT_ENDPOINT 10 /* Separate endpoint for reboot switch */
+#define HA_ESP_REJOIN_ENDPOINT 11 /* separate endpoint for the rejoin switch */
+#define REJOIN_MIN_INTERVAL_MS (5 * 60 * 1000) /* ignore further rejoin requests for 5 min */
 
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
